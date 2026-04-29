@@ -3,7 +3,7 @@
  * Epistora DB Engine - Optimized for Multi-language (Bangla/Arabic/Hindi)
  */
 
-require_once 'config.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'config.php';
 
 // Force UTF-8 internal encoding for multibyte character safety
 mb_internal_encoding("UTF-8");
@@ -13,6 +13,80 @@ if (!defined('DATA_PATH')) {
 }
 
 class DBEngine {
+
+    private static $pdo = null;
+
+    private static function mysqlEnabled() {
+        if (!defined('DB_BACKEND') || DB_BACKEND !== 'mysql') return false;
+        if (!defined('MYSQL_HOST') || !defined('MYSQL_DATABASE') || !defined('MYSQL_USER')) return false;
+        return MYSQL_HOST !== '' && MYSQL_DATABASE !== '' && MYSQL_USER !== '';
+    }
+
+    private static function getPdo() {
+        if (self::$pdo !== null) return self::$pdo;
+        if (!self::mysqlEnabled()) return null;
+        if (!class_exists('PDO')) {
+            throw new Exception('PDO extension is not available.');
+        }
+
+        $dsn = sprintf(
+            'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
+            MYSQL_HOST,
+            MYSQL_PORT,
+            MYSQL_DATABASE
+        );
+
+        $options = [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+        ];
+
+        self::$pdo = new PDO($dsn, MYSQL_USER, MYSQL_PASSWORD, $options);
+        self::initMysqlSchema(self::$pdo);
+        return self::$pdo;
+    }
+
+    private static function initMysqlSchema($pdo) {
+        // Store JSON documents by "relative path" key, e.g. "posts.json", "user_data/123.json"
+        $sql = "
+            CREATE TABLE IF NOT EXISTS epistora_kv_store (
+                `key` VARCHAR(512) NOT NULL,
+                `value` LONGTEXT NULL,
+                `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (`key`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ";
+        $pdo->exec($sql);
+    }
+
+    // List keys like "user_data/123.json" for a given prefix such as "user_data/".
+    public static function listKeysByPrefix($prefix) {
+        $prefix = (string)$prefix;
+        if ($prefix !== '' && substr($prefix, -1) !== '/') $prefix .= '/';
+
+        $pattern = DATA_PATH . $prefix . '*.json';
+        $fileKeys = [];
+        $files = glob($pattern) ?: [];
+        foreach ($files as $file) {
+            $fileKeys[] = str_replace(DATA_PATH, '', $file);
+        }
+
+        if (!self::mysqlEnabled()) {
+            return $fileKeys;
+        }
+
+        $pdo = self::getPdo();
+        $like = $prefix . '%';
+        $stmt = $pdo->prepare("SELECT `key` FROM epistora_kv_store WHERE `key` LIKE ? ORDER BY `key` ASC");
+        $stmt->execute([$like]);
+        $rows = $stmt->fetchAll();
+        $mysqlKeys = array_map(fn($r) => $r['key'], $rows);
+
+        // Merge for smoother migration: JSON may exist only on disk initially.
+        $keys = array_values(array_unique(array_merge($mysqlKeys, $fileKeys)));
+        return $keys;
+    }
 
     private static function ensureStorage() {
         $folders = [DATA_PATH, USER_DATA_PATH, POST_CONTENT_PATH];
@@ -24,10 +98,25 @@ class DBEngine {
     }
 
     public static function readJSON($filename) {
+        $filename = (string)$filename;
+
+        if (self::mysqlEnabled()) {
+            $pdo = self::getPdo();
+            $stmt = $pdo->prepare("SELECT `value` FROM epistora_kv_store WHERE `key` = ? LIMIT 1");
+            $stmt->execute([$filename]);
+            $row = $stmt->fetch();
+            if ($row && array_key_exists('value', $row) && $row['value'] !== null) {
+                $decoded = json_decode($row['value'], true);
+                if (json_last_error() !== JSON_ERROR_NONE) return null;
+                return $decoded;
+            }
+        }
+
         $path = DATA_PATH . $filename;
         if (!file_exists($path)) return null;
 
         $content = file_get_contents($path);
+        if ($content === false) return null;
         $decoded = json_decode($content, true);
 
         // If JSON is malformed (often due to encoding issues), return null
@@ -37,8 +126,7 @@ class DBEngine {
     }
 
     public static function writeJSON($filename, $data) {
-        self::ensureStorage();
-        $path = DATA_PATH . $filename;
+        $filename = (string)$filename;
 
         /**
          * FIX: JSON_UNESCAPED_UNICODE keeps Bangla characters readable.
@@ -48,12 +136,35 @@ class DBEngine {
 
         if ($json_string === false) return false;
 
-        return file_put_contents($path, $json_string, LOCK_EX);
+        // Keep legacy behavior in file mode.
+        if (!self::mysqlEnabled()) {
+            self::ensureStorage();
+            $path = DATA_PATH . $filename;
+            return file_put_contents($path, $json_string, LOCK_EX);
+        }
+
+        $mysqlOk = true;
+        $pdo = self::getPdo();
+        $stmt = $pdo->prepare("
+            INSERT INTO epistora_kv_store (`key`, `value`)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)
+        ");
+        $mysqlOk = $stmt->execute([$filename, $json_string]);
+
+        if (!self::mysqlEnabled() || (defined('DB_MIRROR_TO_FILES') && DB_MIRROR_TO_FILES)) {
+            self::ensureStorage();
+            $path = DATA_PATH . $filename;
+            $fileOk = file_put_contents($path, $json_string, LOCK_EX);
+            return $mysqlOk && $fileOk !== false;
+        }
+
+        return $mysqlOk;
     }
 
     public static function initVault($user_id) {
         $filename = "user_data/" . $user_id . ".json";
-        if (file_exists(DATA_PATH . $filename)) return false;
+        if (self::readJSON($filename) !== null) return false;
 
         $vault_template = [
             "user_id"    => $user_id,

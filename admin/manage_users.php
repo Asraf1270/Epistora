@@ -3,7 +3,7 @@ require_once 'auth_check.php';
 require_once '../config.php';
 require_once '../db_engine.php';
 
-$user_files = glob(DATA_PATH . "user_data/*.json");
+$user_keys = DBEngine::listKeysByPrefix("user_data/");
 $message = "";
 
 if (isset($_POST['update_role'])) {
@@ -41,8 +41,8 @@ if (isset($_POST['update_role'])) {
         </header>
 
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            <?php foreach ($user_files as $file): 
-                $user = json_decode(file_get_contents($file), true);
+            <?php foreach ($user_keys as $key):
+                $user = DBEngine::readJSON($key);
                 if (!$user) continue;
             ?>
             <div class="bg-white p-6 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col justify-between group hover:border-blue-500 transition-all duration-300">

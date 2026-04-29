@@ -3,14 +3,14 @@ require_once 'auth_check.php';
 require_once '../config.php';
 require_once '../db_engine.php';
 
-// Fetch all application files
-$app_files = glob(DATA_PATH . "applications/*.json");
+// Fetch all application keys (supports MySQL-backed KV store)
+$app_keys = DBEngine::listKeysByPrefix("applications/");
 $applications = [];
 
-foreach ($app_files as $file) {
-    $data = json_decode(file_get_contents($file), true);
+foreach ($app_keys as $key) {
+    $data = DBEngine::readJSON($key);
     if ($data) {
-        $data['id'] = basename($file, '.json'); // Get ID from filename
+        $data['id'] = basename($key, '.json'); // Get ID from key filename
         $applications[] = $data;
     }
 }

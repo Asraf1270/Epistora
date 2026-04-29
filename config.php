@@ -72,5 +72,22 @@ date_default_timezone_set('UTC');
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
+// 8. DATABASE (MySQL) CONFIG (optional)
+// Enable by setting: DB_BACKEND=mysql and valid MySQL credentials.
+// If MySQL is enabled, we keep file fallback/mirroring by default so pages using `glob()` still work.
+define('DB_BACKEND', getenv('DB_BACKEND') ?: 'file'); // 'file' | 'mysql'
+
+define('MYSQL_HOST', getenv('MYSQL_HOST') ?: '');
+define('MYSQL_PORT', getenv('MYSQL_PORT') ?: '3306');
+define('MYSQL_DATABASE', getenv('MYSQL_DATABASE') ?: '');
+define('MYSQL_USER', getenv('MYSQL_USER') ?: '');
+define('MYSQL_PASSWORD', getenv('MYSQL_PASSWORD') ?: '');
+
+$mirrorEnv = getenv('DB_MIRROR_TO_FILES');
+define(
+    'DB_MIRROR_TO_FILES',
+    $mirrorEnv === false ? true : !in_array(strtolower((string)$mirrorEnv), ['0', 'false', 'no'], true)
+);
+
 // Load DB Engine automatically
 require_once ROOT_PATH . 'db_engine.php';
